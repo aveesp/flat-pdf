@@ -1,3 +1,36 @@
+import { PDFDocument } from 'pdf-lib';
+
+// Inside your processing method:
+const pdfDoc = await PDFDocument.load(arrayBuffer);
+const context = pdfDoc.context;
+
+try {
+  const form = pdfDoc.getForm();
+
+  // 1. WIPE THE WEB-FORM ENGINE (XFA)
+  // This breaks the browser's ability to overlay active HTML inputs over the text
+  try {
+    form.deleteXFA();
+  } catch (e) {
+    console.log("No dynamic XML/XFA structure detected.");
+  }
+
+  // 2. STAMP DATA VALUES & REMOVE FIELD LOGIC
+  // Loop through all fields, turn on read-only, and draw the hard text shapes
+  const fields = form.getFields();
+  fields.forEach(field => {
+    try {
+      field.enableReadOnly();
+    } catch(e){}
+  });
+
+  // Force pdf-lib to bake the current typed text permanently onto the canvas vectors
+  form.updateFieldAppearances();
+
+} catch (globalFormError) {
+  console.error("Form utility error:", globalFormError);
+}
+
 // 3. HARD REMOVAL OF FIELD INTERACTION INTERFACES
 // This sweeps through the PDF dictionary tree and unlinks the text fields 
 // from acting like form elements entirely, leaving just the text vectors behind.
@@ -36,3 +69,9 @@ for (const page of pages) {
 
 // Clean up global AcroForm linkages
 try { pdfDoc.catalog.delete(context.obj('AcroForm')); } catch (e) {}
+
+// 4. Save out the permanently un-editable file layout
+const protectedPdfBytes = await pdfDoc.save();
+const resultBlob = new Blob([protectedPdfBytes], { type: 'application/pdf' });
+
+this.flattenedPdfUrl = URL.createObjectURL(resultBlob);
