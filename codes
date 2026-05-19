@@ -1,21 +1,48 @@
+import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
+
+// Inside your fetch / processing method:
 // 1. Load the document into pdf-lib
 const pdfDoc = await PDFDocument.load(arrayBuffer);
 const context = pdfDoc.context;
 
 try {
   const form = pdfDoc.getForm();
+  
+  // Wipe out dynamic complex layout scripts that clash with rendering
+  try { form.deleteXFA(); } catch(e){}
 
-  // IMPORTANT: Tell pdf-lib to look at all current data values inside the 
-  // form fields and draw actual, physical text vectors onto the page canvas.
+  // Loop through every logical form element inside the file architecture
+  const fields = form.getFields();
+  fields.forEach(field => {
+    try {
+      // Step A: Lock user entry at the conceptual programmatic level
+      field.enableReadOnly();
+      
+      // Step B: Target the underlying PDF structural components directly
+      const widgets = field.acroField.getWidgets();
+      widgets.forEach(widget => {
+        // We configure the structural /F (Flags) number key.
+        // Value '1' implies standard visual rendering.
+        // Value '64' implies Locked (prevents changes/deletion in tools).
+        // Combined (1 + 64 = 65) locks the entry completely while maintaining text viability.
+        widget.dict.set(PDFName.of('F'), PDFNumber.of(65));
+        
+        // Remove individual inner action handlers (/AA /A) that trigger dropdown/edit actions
+        widget.dict.delete(PDFName.of('AA'));
+        widget.dict.delete(PDFName.of('A'));
+      });
+    } catch (fieldError) {
+      console.warn("Skipped a nested structural element context:", fieldError);
+    }
+  });
+
+  // Force the layout engine to build matching vector silhouettes for the text
   form.updateFieldAppearances();
-
-  // Try standard flattening to lock the newly drawn text to the page
-  form.flatten();
-} catch (e) {
-  console.warn("High-level flatten step encountered structural anomalies, handling via fallback...");
+} catch (globalFormError) {
+  console.error("Structural processing encountered exceptions, running page-level bypass...", globalFormError);
 }
 
-// 2. THE SAFE PURGE: Loop pages to drop only the interaction layer, keeping the text visuals
+// 2. Page Level Reinforcement: Strip input capability directly out of the visual elements
 const pages = pdfDoc.getPages();
 for (const page of pages) {
   const pageDict = page.node;
@@ -23,41 +50,33 @@ for (const page of pages) {
 
   if (pageDict.has(annotsKey)) {
     const annotsArray = pageDict.get(annotsKey);
-    
     if (annotsArray && (annotsArray as any).array) {
       const array = (annotsArray as any).array;
-      
-      // Loop backwards through annotations to safely remove interactive wrappers
+
       for (let i = array.length - 1; i >= 0; i--) {
         const annotRef = array[i];
         const annotMap = context.lookup(annotRef);
-        
+
         if (annotMap && typeof (annotMap as any).get === 'function') {
           const subtype = (annotMap as any).get(context.obj('Subtype'));
           
-          // WE ONLY REMOVE THE WIDGET LAYER.
-          // By running form.updateFieldAppearances() first, pdf-lib left the 
-          // text appearances on the page, so stripping the /Widget now leaves the text intact.
           if (subtype && subtype.toString() === '/Widget') {
-            array.splice(i, 1);
+            // Instead of deleting the /Widget completely (which hides the font),
+            // we remove the specific interactive Subtype trigger /Widget entirely,
+            // or we clear out the field's interactive link mappings (/FT)
+            (annotMap as any).delete(context.obj('FT')); // Removes Text Form context
+            (annotMap as any).delete(context.obj('T'));  // Removes internal Name link
+            
+            // Re-assign the element as a simple /FreeText or standard visual asset
+            (annotMap as any).set(context.obj('Subtype'), context.obj('FreeText'));
           }
         }
-      }
-
-      // If the page has no more annotations left, delete the key completely
-      if (array.length === 0) {
-        pageDict.delete(annotsKey);
       }
     }
   }
 }
 
-// 3. Final cleanup of the root form dictionary map
-try {
-  pdfDoc.catalog.delete(context.obj('AcroForm'));
-} catch (e) {}
-
-// 4. Save and serve the read-only file with data intact
+// 3. Save the modified document
 const flattenedPdfBytes = await pdfDoc.save();
 const resultBlob = new Blob([flattenedPdfBytes], { type: 'application/pdf' });
 
