@@ -1,48 +1,6 @@
-import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
-
-// Inside your fetch / processing method:
-// 1. Load the document into pdf-lib
-const pdfDoc = await PDFDocument.load(arrayBuffer);
-const context = pdfDoc.context;
-
-try {
-  const form = pdfDoc.getForm();
-  
-  // Wipe out dynamic complex layout scripts that clash with rendering
-  try { form.deleteXFA(); } catch(e){}
-
-  // Loop through every logical form element inside the file architecture
-  const fields = form.getFields();
-  fields.forEach(field => {
-    try {
-      // Step A: Lock user entry at the conceptual programmatic level
-      field.enableReadOnly();
-      
-      // Step B: Target the underlying PDF structural components directly
-      const widgets = field.acroField.getWidgets();
-      widgets.forEach(widget => {
-        // We configure the structural /F (Flags) number key.
-        // Value '1' implies standard visual rendering.
-        // Value '64' implies Locked (prevents changes/deletion in tools).
-        // Combined (1 + 64 = 65) locks the entry completely while maintaining text viability.
-        widget.dict.set(PDFName.of('F'), PDFNumber.of(65));
-        
-        // Remove individual inner action handlers (/AA /A) that trigger dropdown/edit actions
-        widget.dict.delete(PDFName.of('AA'));
-        widget.dict.delete(PDFName.of('A'));
-      });
-    } catch (fieldError) {
-      console.warn("Skipped a nested structural element context:", fieldError);
-    }
-  });
-
-  // Force the layout engine to build matching vector silhouettes for the text
-  form.updateFieldAppearances();
-} catch (globalFormError) {
-  console.error("Structural processing encountered exceptions, running page-level bypass...", globalFormError);
-}
-
-// 2. Page Level Reinforcement: Strip input capability directly out of the visual elements
+// 3. HARD REMOVAL OF FIELD INTERACTION INTERFACES
+// This sweeps through the PDF dictionary tree and unlinks the text fields 
+// from acting like form elements entirely, leaving just the text vectors behind.
 const pages = pdfDoc.getPages();
 for (const page of pages) {
   const pageDict = page.node;
@@ -61,13 +19,13 @@ for (const page of pages) {
           const subtype = (annotMap as any).get(context.obj('Subtype'));
           
           if (subtype && subtype.toString() === '/Widget') {
-            // Instead of deleting the /Widget completely (which hides the font),
-            // we remove the specific interactive Subtype trigger /Widget entirely,
-            // or we clear out the field's interactive link mappings (/FT)
-            (annotMap as any).delete(context.obj('FT')); // Removes Text Form context
-            (annotMap as any).delete(context.obj('T'));  // Removes internal Name link
+            // Unlink interactive keys while leaving the appearance streams (/AP) untouched
+            // This leaves the text fully visible but stops the browser from treating it as an input box
+            (annotMap as any).delete(context.obj('FT')); // Drops field type definition
+            (annotMap as any).delete(context.obj('T'));  // Drops structural field mapping
+            (annotMap as any).delete(context.obj('AA')); // Drops interactive trigger actions
             
-            // Re-assign the element as a simple /FreeText or standard visual asset
+            // Set it as a flat free-text annot element rather than an input widget
             (annotMap as any).set(context.obj('Subtype'), context.obj('FreeText'));
           }
         }
@@ -76,8 +34,5 @@ for (const page of pages) {
   }
 }
 
-// 3. Save the modified document
-const flattenedPdfBytes = await pdfDoc.save();
-const resultBlob = new Blob([flattenedPdfBytes], { type: 'application/pdf' });
-
-this.flattenedPdfUrl = URL.createObjectURL(resultBlob);
+// Clean up global AcroForm linkages
+try { pdfDoc.catalog.delete(context.obj('AcroForm')); } catch (e) {}
