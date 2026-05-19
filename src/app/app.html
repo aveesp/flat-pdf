@@ -1,0 +1,12 @@
+<div class="container">
+  <h2>PDF Flattener</h2>
+  <input type="file" (change)="onFileSelected($event)" accept="application/pdf" />
+
+  <div *ngIf="flattenedPdfUrl" class="preview-section">
+    <h3>Preview Flattened PDF</h3>
+    <!-- Displaying the PDF for viewing -->
+    <iframe [src]="flattenedPdfUrl | safeUrl" width="100%" height="500px"></iframe>
+    
+    <button (click)="downloadPdf()">Download Flattened PDF</button>
+  </div>
+</div>
