@@ -1,33 +1,33 @@
 // 1. Load the document into pdf-lib
 const pdfDoc = await PDFDocument.load(arrayBuffer);
-
-try {
-  // 2. Perform the high-level draw to burn values down into the text stream layer
-  const form = pdfDoc.getForm();
-  form.updateFieldAppearances();
-  form.flatten();
-} catch (e) {
-  console.warn("High level flatten step bypassed. Document structures may vary.");
-}
-
-// 3. THE FIX: Loop through every page blueprint and wipe out the floating interaction states
-const pages = pdfDoc.getPages();
 const context = pdfDoc.context;
 
+try {
+  const form = pdfDoc.getForm();
+
+  // IMPORTANT: Tell pdf-lib to look at all current data values inside the 
+  // form fields and draw actual, physical text vectors onto the page canvas.
+  form.updateFieldAppearances();
+
+  // Try standard flattening to lock the newly drawn text to the page
+  form.flatten();
+} catch (e) {
+  console.warn("High-level flatten step encountered structural anomalies, handling via fallback...");
+}
+
+// 2. THE SAFE PURGE: Loop pages to drop only the interaction layer, keeping the text visuals
+const pages = pdfDoc.getPages();
 for (const page of pages) {
-  // Access the raw PDF page dictionary keys
   const pageDict = page.node;
   const annotsKey = context.obj('Annots');
 
   if (pageDict.has(annotsKey)) {
     const annotsArray = pageDict.get(annotsKey);
     
-    // Check if the page has an array of interactive elements
     if (annotsArray && (annotsArray as any).array) {
       const array = (annotsArray as any).array;
       
-      // Filter out elements flagged as Subtype /Widget (interactive inputs) 
-      // while keeping standard visual markup highlights or text links if they exist
+      // Loop backwards through annotations to safely remove interactive wrappers
       for (let i = array.length - 1; i >= 0; i--) {
         const annotRef = array[i];
         const annotMap = context.lookup(annotRef);
@@ -35,14 +35,16 @@ for (const page of pages) {
         if (annotMap && typeof (annotMap as any).get === 'function') {
           const subtype = (annotMap as any).get(context.obj('Subtype'));
           
-          // If it matches a text box, checkbox, or radio form layer, destroy the link reference
+          // WE ONLY REMOVE THE WIDGET LAYER.
+          // By running form.updateFieldAppearances() first, pdf-lib left the 
+          // text appearances on the page, so stripping the /Widget now leaves the text intact.
           if (subtype && subtype.toString() === '/Widget') {
             array.splice(i, 1);
           }
         }
       }
 
-      // Completely clear the array if it only contained interactive components
+      // If the page has no more annotations left, delete the key completely
       if (array.length === 0) {
         pageDict.delete(annotsKey);
       }
@@ -50,12 +52,12 @@ for (const page of pages) {
   }
 }
 
-// 4. Double check the root configuration dictionary is clean
+// 3. Final cleanup of the root form dictionary map
 try {
   pdfDoc.catalog.delete(context.obj('AcroForm'));
-} catch(e){}
+} catch (e) {}
 
-// 5. Build and distribute the non-editable binary 
+// 4. Save and serve the read-only file with data intact
 const flattenedPdfBytes = await pdfDoc.save();
 const resultBlob = new Blob([flattenedPdfBytes], { type: 'application/pdf' });
 
